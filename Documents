@@ -1,1 +1,1112 @@
+# Wanderlust MERN Application — Docker & AWS EC2 Deployment Documentation
 
+**Repository:** https://github.com/iamajaypokharel/wanderlust-Devops-mern  
+**Branch:** `main`  
+**Deployment model:** Docker containers on a single AWS EC2 instance  
+**Container orchestration:** Docker CLI (no Docker Compose required for the deployed workflow)  
+**Application:** Wanderlust travel blog (MERN stack)
+
+---
+
+## 1. Project Overview
+
+Wanderlust is a MERN-based travel blog application. The application contains a React/Vite frontend, a Node.js/Express backend, and a MongoDB database.
+
+The original application is designed as an open-source travel blog and includes features such as featured travel posts, category-based discovery, user-oriented navigation, authentication, and post-related API functionality.
+
+This deployment project adds the DevOps layer needed to run the application on AWS EC2 using Docker containers.
+
+### Main goals of this deployment
+
+1. Containerize the frontend, backend, and MongoDB components.
+2. Run each application component as an independent Docker container.
+3. Connect the containers through a user-defined Docker bridge network.
+4. Persist MongoDB data using a Docker volume.
+5. Import the supplied sample travel-post data automatically into MongoDB.
+6. Publish the frontend and backend ports from the EC2 host.
+7. Configure CORS and backend MongoDB connectivity for the EC2 environment.
+8. Store the application source in GitHub for version control and future CI/CD.
+
+---
+
+## 2. Repository
+
+GitHub repository:
+
+`https://github.com/iamajaypokharel/wanderlust-Devops-mern`
+
+The repository currently contains the application and deployment-related files including:
+
+```text
+wanderlust-Devops-mern/
+├── backend/
+├── frontend/
+├── extra1/
+├── Dockerfile
+├── Dockerfile.mongo
+├── docker-compose.yaml
+├── nginx.conf
+├── Vagrantfile
+├── bootstrap.sh
+├── Masterkubeadm.sh
+├── script1.sh
+├── package.json
+├── package-lock.json
+├── README.md
+├── LICENSE
+└── .gitignore
+```
+
+The repository also includes separate Dockerfiles inside the application components:
+
+```text
+backend/Dockerfile
+frontend/Dockerfile
+Dockerfile.mongo
+```
+
+---
+
+## 3. Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 18 + TypeScript + Vite |
+| Backend | Node.js + Express |
+| Database | MongoDB 6.0 |
+| ODM | Mongoose |
+| Authentication | JSON Web Token (JWT) + cookies |
+| HTTP client | Axios |
+| Cache | Redis support exists; deployment can run without Redis |
+| Web/server routing | Nginx configuration is included in the repository |
+| Containerization | Docker |
+| Container network | Docker bridge network |
+| Database persistence | Docker named volume |
+| Source control | Git + GitHub |
+| Cloud | AWS EC2 |
+| Operating system | Ubuntu on EC2 |
+
+The backend package declares Express, CORS, dotenv, JWT, Mongoose, Redis, compression, cookie-parser, and related dependencies. The backend start command is `node server.js`. The frontend uses Vite and has `npm run dev` and `npm run build` scripts. 
+
+---
+
+## 4. Application Architecture
+
+### Logical architecture
+
+```text
+                         Internet
+                            |
+                            v
+                  +--------------------+
+                  |      AWS EC2       |
+                  |                    |
+                  |  Port 5173         |
+                  |      |             |
+                  |      v             |
+                  |  +-----------+     |
+                  |  | Frontend  |     |
+                  |  | React/Vite|     |
+                  |  +-----------+     |
+                  |       |            |
+                  |       | HTTP / API |
+                  |       v            |
+                  |  Port 5000         |
+                  |  +-----------+     |
+                  |  | Backend   |     |
+                  |  | Express   |     |
+                  |  +-----------+     |
+                  |       |            |
+                  |       | MongoDB    |
+                  |       v            |
+                  |  +-----------+     |
+                  |  | MongoDB   |     |
+                  |  | 6.0       |     |
+                  |  +-----------+     |
+                  |       |            |
+                  |       v            |
+                  |  +-----------+     |
+                  |  | Docker    |     |
+                  |  | Volume    |     |
+                  |  +-----------+     |
+                  +--------------------+
+```
+
+### Docker network architecture
+
+The deployed containers communicate through a user-defined Docker network named `mern-network`.
+
+```text
+                    mern-network
+                         |
+        +----------------+----------------+
+        |                |                |
+        v                v                v
+  mern-frontend    mern-backend     mern-mongo
+      :5173            :5000            :27017
+                           |
+                           |
+                 mongodb://mongo:27017/wanderlust
+                           |
+                           v
+                        MongoDB
+```
+
+The backend uses the hostname `mongo` rather than `localhost`. The MongoDB container is therefore started with a Docker network alias `mongo`.
+
+---
+
+## 5. Frontend
+
+The frontend is a React + TypeScript application using Vite. Its package configuration includes `react`, `react-dom`, `react-router-dom`, `axios`, Tailwind-related packages, React Hook Form, Zod, and Vite.
+
+The frontend Dockerfile uses a Node 23 Alpine image and starts Vite in host-accessible mode:
+
+```dockerfile
+FROM node:23-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install --upgradable npm
+COPY . .
+
+EXPOSE 5173
+CMD ["npm", "run", "dev", "--", "--host"]
+```
+
+Because the deployed frontend is using Vite's development server, port `5173` is published from the container to the EC2 host.
+
+### Frontend container
+
+Example deployment command:
+
+```bash
+docker run -d \
+  --name mern-frontend \
+  --network mern-network \
+  -p 5173:5173 \
+  mern-frontend:latest
+```
+
+### Browser URL
+
+```text
+http://<EC2_PUBLIC_IP>:5173
+```
+
+### Important production note
+
+For production, the preferred design is to build the React application with `npm run build` and serve the resulting static files with Nginx rather than running the Vite development server continuously.
+
+---
+
+## 6. Backend
+
+The backend is a Node.js/Express application. Its entry point is `server.js` and its package script is:
+
+```json
+"start": "node server.js"
+```
+
+The server first initializes Redis support, connects to MongoDB, and only then starts the Express listener. Therefore, a MongoDB connectivity failure prevents the HTTP API from starting.
+
+The API routes are mounted under:
+
+```text
+/api/posts
+/api/auth
+/api/user
+```
+
+The application also has a root endpoint:
+
+```text
+GET /
+```
+
+that returns a basic backend-accessibility message.
+
+### Backend Dockerfile
+
+The repository's backend Dockerfile uses a builder stage followed by a runtime stage:
+
+```dockerfile
+FROM node:22-slim AS builder
+WORKDIR /app
+COPY . .
+RUN npm i
+
+FROM node:22-slim
+WORKDIR /app
+COPY --from=builder /app .
+COPY .env .env
+EXPOSE 5000
+CMD ["npm","start"]
+```
+
+### Backend container
+
+Example deployment command:
+
+```bash
+docker run -d \
+  --name mern-backend \
+  --network mern-network \
+  -p 5000:5000 \
+  -e PORT=5000 \
+  -e MONGODB_URI="mongodb://mongo:27017/wanderlust" \
+  mern-backend:latest
+```
+
+### Backend endpoint
+
+```text
+http://<EC2_PUBLIC_IP>:5000/api/posts
+```
+
+A successful response may show `200 OK`; a `304 Not Modified` response is also a valid HTTP response indicating the client can use its cached representation when the resource has not changed.
+
+---
+
+## 7. MongoDB
+
+MongoDB is built from the repository's `Dockerfile.mongo`.
+
+Current Dockerfile logic:
+
+```dockerfile
+FROM mongo:6.0
+
+COPY backend/data/sample_posts.json /data/sample_posts.json
+
+CMD ["bash", "-c", "mongod --bind_ip_all --fork --logpath /var/log/mongodb.log && sleep 5 && mongoimport --db wanderlust --collection posts --file /data/sample_posts.json --jsonArray && tail -f /var/log/mongodb.log"]
+```
+
+### What this does
+
+1. Starts from MongoDB 6.0.
+2. Copies the supplied `sample_posts.json` into the image.
+3. Starts MongoDB with `--bind_ip_all` so other Docker containers can connect.
+4. Imports the sample post data into the `wanderlust` database and `posts` collection.
+5. Keeps the container process alive by following the MongoDB log.
+
+### MongoDB image
+
+The custom image used in the deployment is:
+
+```text
+wanderlust-devops-mongodb:latest
+```
+
+### MongoDB container
+
+```bash
+docker run -d \
+  --name mern-mongo \
+  --network mern-network \
+  --network-alias mongo \
+  -v mongo-data:/data/db \
+  wanderlust-devops-mongodb:latest
+```
+
+### Why `--network-alias mongo` is important
+
+The backend's environment uses:
+
+```text
+mongodb://mongo:27017/wanderlust
+```
+
+Inside a Docker user-defined network, Docker DNS resolves `mongo` to the MongoDB container because of the network alias.
+
+### MongoDB data persistence
+
+A named Docker volume is used:
+
+```text
+mongo-data
+```
+
+The volume is mounted at:
+
+```text
+/data/db
+```
+
+This means the database contents can survive removal/recreation of the MongoDB container as long as the named volume is retained.
+
+### Database verification
+
+To verify the imported records:
+
+```bash
+docker exec -it mern-mongo mongosh --eval 'db.getSiblingDB("wanderlust").posts.countDocuments()'
+```
+
+The deployed environment was verified to contain **10 post documents**.
+
+---
+
+## 8. Docker Network
+
+Create the application network once:
+
+```bash
+docker network create mern-network
+```
+
+Verify:
+
+```bash
+docker network ls
+```
+
+Inspect it:
+
+```bash
+docker network inspect mern-network
+```
+
+The three containers should appear on the same network:
+
+```text
+mern-frontend
+mern-backend
+mern-mongo
+```
+
+### Why a user-defined network is used
+
+A user-defined Docker bridge network provides Docker DNS-based name resolution between containers. This makes:
+
+```text
+mongo
+```
+
+resolvable from the backend without hard-coding the MongoDB container IP address.
+
+This is more reliable than using a dynamic container IP such as `172.19.0.x`.
+
+---
+
+## 9. Environment Variables
+
+The backend currently uses these important variables:
+
+```env
+PORT=5000
+MONGODB_URI=mongodb://mongo:27017/wanderlust
+CORS_ORIGIN=http://<EC2_PUBLIC_IP>:5173
+FRONTEND_URL=http://<EC2_PUBLIC_IP>:5173
+NODE_ENV=Development
+ACCESS_COOKIE_MAXAGE=120000
+ACCESS_TOKEN_EXPIRES_IN=2m
+REFRESH_COOKIE_MAXAGE=120000
+REFRESH_TOKEN_EXPIRES_IN=7d
+JWT_SECRET=<REPLACE_WITH_A_NEW_SECRET>
+```
+
+The backend CORS middleware uses `FRONTEND_URL` as its allowed origin and enables credentials.
+
+### Example CORS flow
+
+```text
+Browser
+  |
+  | Origin: http://<EC2_PUBLIC_IP>:5173
+  v
+Express API :5000
+  |
+  | CORS checks FRONTEND_URL
+  v
+API request accepted
+```
+
+---
+
+## 10. AWS EC2 Configuration
+
+The application is deployed to an AWS EC2 Ubuntu server.
+
+For testing, the EC2 security group should allow the required application ports.
+
+### Recommended inbound rules for the current learning deployment
+
+| Protocol | Port | Purpose |
+|---|---:|---|
+| TCP | 22 | SSH administration |
+| TCP | 5173 | React/Vite frontend |
+| TCP | 5000 | Express backend |
+
+MongoDB port `27017` should **not** be exposed publicly for this architecture. The backend reaches MongoDB through the private Docker network.
+
+### Accessing the application
+
+Frontend:
+
+```text
+http://<EC2_PUBLIC_IP>:5173
+```
+
+Backend:
+
+```text
+http://<EC2_PUBLIC_IP>:5000
+```
+
+Posts API:
+
+```text
+http://<EC2_PUBLIC_IP>:5000/api/posts
+```
+
+---
+
+## 11. Complete Deployment Procedure Without Docker Compose
+
+The following is the CLI-based deployment workflow used for the project.
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/iamajaypokharel/wanderlust-Devops-mern.git
+cd wanderlust-Devops-mern
+```
+
+### Step 2 — Build MongoDB image
+
+```bash
+docker build -t wanderlust-devops-mongodb:latest -f Dockerfile.mongo .
+```
+
+### Step 3 — Create Docker network
+
+```bash
+docker network create mern-network
+```
+
+### Step 4 — Create MongoDB volume
+
+```bash
+docker volume create mongo-data
+```
+
+### Step 5 — Start MongoDB
+
+```bash
+docker run -d \
+  --name mern-mongo \
+  --network mern-network \
+  --network-alias mongo \
+  -v mongo-data:/data/db \
+  wanderlust-devops-mongodb:latest
+```
+
+### Step 6 — Build backend image
+
+```bash
+docker build -t mern-backend:latest ./backend
+```
+
+### Step 7 — Start backend
+
+```bash
+docker run -d \
+  --name mern-backend \
+  --network mern-network \
+  -p 5000:5000 \
+  -e PORT=5000 \
+  -e MONGODB_URI="mongodb://mongo:27017/wanderlust" \
+  mern-backend:latest
+```
+
+### Step 8 — Build frontend image
+
+```bash
+docker build -t mern-frontend:latest ./frontend
+```
+
+### Step 9 — Start frontend
+
+```bash
+docker run -d \
+  --name mern-frontend \
+  --network mern-network \
+  -p 5173:5173 \
+  mern-frontend:latest
+```
+
+### Step 10 — Verify containers
+
+```bash
+docker ps
+```
+
+Expected services:
+
+```text
+mern-frontend
+mern-backend
+mern-mongo
+```
+
+### Step 11 — Verify MongoDB data
+
+```bash
+docker exec -it mern-mongo mongosh --eval 'db.getSiblingDB("wanderlust").posts.countDocuments()'
+```
+
+### Step 12 — Verify backend API
+
+```bash
+curl http://localhost:5000/api/posts
+```
+
+### Step 13 — Open frontend
+
+Open from a browser:
+
+```text
+http://<EC2_PUBLIC_IP>:5173
+```
+
+---
+
+## 12. Rebuild and Redeploy After Code Changes
+
+Because the deployed workflow does not use Docker Compose, each changed service can be rebuilt independently.
+
+### Backend update
+
+```bash
+git pull
+
+docker build -t mern-backend:latest ./backend
+
+docker rm -f mern-backend
+
+docker run -d \
+  --name mern-backend \
+  --network mern-network \
+  -p 5000:5000 \
+  -e PORT=5000 \
+  -e MONGODB_URI="mongodb://mongo:27017/wanderlust" \
+  mern-backend:latest
+```
+
+### Frontend update
+
+```bash
+git pull
+
+docker build -t mern-frontend:latest ./frontend
+
+docker rm -f mern-frontend
+
+docker run -d \
+  --name mern-frontend \
+  --network mern-network \
+  -p 5173:5173 \
+  mern-frontend:latest
+```
+
+### MongoDB update
+
+Only rebuild MongoDB when the Mongo image/Dockerfile changes:
+
+```bash
+docker build -t wanderlust-devops-mongodb:latest -f Dockerfile.mongo .
+docker rm -f mern-mongo
+docker run -d \
+  --name mern-mongo \
+  --network mern-network \
+  --network-alias mongo \
+  -v mongo-data:/data/db \
+  wanderlust-devops-mongodb:latest
+```
+
+The `mongo-data` volume should be retained so the database survives container recreation.
+
+---
+
+## 13. Troubleshooting Guide
+
+### Problem: `getaddrinfo ENOTFOUND mongo`
+
+Cause: the backend cannot resolve the MongoDB hostname.
+
+Fix:
+
+```bash
+docker network inspect mern-network
+```
+
+Make sure MongoDB is connected with the alias:
+
+```bash
+docker network disconnect mern-network mern-mongo
+docker network connect --alias mongo mern-network mern-mongo
+```
+
+Then:
+
+```bash
+docker restart mern-backend
+```
+
+---
+
+### Problem: `ECONNREFUSED <mongo-ip>:27017`
+
+Cause: MongoDB can be resolved but is not accepting external container connections.
+
+The custom MongoDB image should start MongoDB with:
+
+```bash
+mongod --bind_ip_all
+```
+
+Rebuild and recreate the MongoDB container after changing the Dockerfile.
+
+---
+
+### Problem: `curl localhost:5000` fails
+
+Check whether the backend container is running:
+
+```bash
+docker ps -a
+```
+
+Then inspect logs:
+
+```bash
+docker logs mern-backend
+```
+
+Because `server.js` connects to MongoDB before calling `app.listen()`, a MongoDB connection failure prevents port 5000 from becoming available.
+
+---
+
+### Problem: frontend cannot access API
+
+Check the browser Network tab and verify the frontend is calling the EC2 backend address.
+
+Check CORS configuration:
+
+```text
+FRONTEND_URL=http://<EC2_PUBLIC_IP>:5173
+```
+
+The Express application configures CORS using `FRONTEND_URL` and enables credentials.
+
+---
+
+### Problem: browser shows `304 Not Modified`
+
+A `304` response is not a server error. It indicates that the cached representation can be reused when the resource has not changed.
+
+To test the API directly:
+
+```bash
+curl -H "Cache-Control: no-cache" http://localhost:5000/api/posts
+```
+
+---
+
+### Problem: MongoDB data disappears
+
+Do not remove the named volume during ordinary container recreation.
+
+Check volumes:
+
+```bash
+docker volume ls
+```
+
+Inspect:
+
+```bash
+docker volume inspect mongo-data
+```
+
+---
+
+## 14. Useful Docker Commands
+
+### Containers
+
+```bash
+docker ps
+```
+
+```bash
+docker ps -a
+```
+
+```bash
+docker start <container>
+```
+
+```bash
+docker stop <container>
+```
+
+```bash
+docker restart <container>
+```
+
+```bash
+docker rm -f <container>
+```
+
+### Logs
+
+```bash
+docker logs mern-backend
+```
+
+```bash
+docker logs mern-mongo
+```
+
+```bash
+docker logs -f mern-backend
+```
+
+### Images
+
+```bash
+docker images
+```
+
+```bash
+docker build -t mern-backend:latest ./backend
+```
+
+### Networks
+
+```bash
+docker network ls
+```
+
+```bash
+docker network inspect mern-network
+```
+
+### Volumes
+
+```bash
+docker volume ls
+```
+
+```bash
+docker volume inspect mongo-data
+```
+
+### Container shell
+
+```bash
+docker exec -it mern-backend sh
+```
+
+```bash
+docker exec -it mern-mongo mongosh
+```
+
+---
+
+## 15. Nginx Configuration
+
+The repository includes `nginx.conf` with an intended reverse-proxy architecture:
+
+```text
+/upstream frontend_server/  -> frontend:5173
+/upstream backend_server/   -> backend:5000
+```
+
+It routes:
+
+```text
+/api/*  -> backend
+/*      -> frontend
+```
+
+This is a useful next step for production because it allows the browser to communicate through one public HTTP endpoint instead of exposing the frontend and backend as separate public ports.
+
+A target architecture is:
+
+```text
+Browser
+   |
+   v
+EC2 :80
+   |
+   +---- /api/* ----> backend:5000
+   |
+   +---- /* --------> frontend:5173
+```
+
+For production, it is additionally recommended to serve a compiled React build using Nginx rather than keeping the Vite development server exposed on port 5173.
+
+---
+
+## 16. Docker Compose File vs Actual Deployment
+
+The repository contains `docker-compose.yaml`, but the completed EC2 deployment described in this document uses individual Docker CLI commands instead of `docker compose`.
+
+The Compose file is therefore best viewed as an alternative orchestration definition rather than the required deployment mechanism for the current implementation.
+
+The no-Compose workflow gives direct hands-on practice with:
+
+- image creation
+- container lifecycle
+- networks
+- network aliases
+- port publishing
+- environment variables
+- persistent volumes
+- container troubleshooting
+
+---
+
+## 17. Git and GitHub Workflow
+
+The project is version-controlled with Git and hosted in GitHub.
+
+Typical workflow:
+
+```bash
+git status
+git add .
+git commit -m "update deployment"
+git push origin main
+```
+
+To check the configured remote:
+
+```bash
+git remote -v
+```
+
+To change the remote URL:
+
+```bash
+git remote set-url origin https://github.com/iamajaypokharel/wanderlust-Devops-mern.git
+```
+
+GitHub HTTPS authentication should use a Personal Access Token rather than the account password.
+
+---
+
+## 18. Security Considerations
+
+### Critical: rotate the exposed JWT secret
+
+The current public repository contains a `backend/.env` file with a real-looking `JWT_SECRET` value. Because the repository is public, this should be treated as compromised.
+
+Immediate remediation:
+
+1. Generate a new strong JWT secret.
+2. Remove the secret-bearing `.env` file from Git tracking.
+3. Add `.env` to `.gitignore`.
+4. Store production secrets on the server or in a proper secret-management system.
+5. Revoke/rotate any other credentials that may have been committed.
+
+Example `.gitignore` entry:
+
+```gitignore
+.env
+.env.*
+!.env.sample
+```
+
+If the secret has already been exposed in Git history, simply deleting the file in a later commit is not sufficient. The secret must still be rotated because previous commits may remain accessible.
+
+### MongoDB exposure
+
+Do not publish `27017` to the public internet. The deployed design keeps MongoDB on the Docker network and does not require public access to the database port.
+
+### EC2 Security Group
+
+Restrict SSH port 22 to a trusted source when possible. Do not leave unnecessary application ports open to the entire internet in a production deployment.
+
+---
+
+## 19. Validation Checklist
+
+```text
+[ ] EC2 instance is running
+[ ] Docker is installed and working
+[ ] Repository cloned
+[ ] mern-network exists
+[ ] mongo-data volume exists
+[ ] MongoDB image built
+[ ] MongoDB container running
+[ ] MongoDB has network alias `mongo`
+[ ] MongoDB `wanderlust.posts` collection contains data
+[ ] Backend image built
+[ ] Backend container running
+[ ] MONGODB_URI points to `mongodb://mongo:27017/wanderlust`
+[ ] Backend API reachable on port 5000
+[ ] Frontend image built
+[ ] Frontend container running
+[ ] Frontend reachable on port 5173
+[ ] CORS allows the frontend origin
+[ ] AWS Security Group allows required ports
+[ ] GitHub contains the current source
+[ ] No secrets are committed to the repository
+```
+
+---
+
+## 20. Recommended Production Improvements
+
+This project is a strong hands-on Docker/EC2 deployment, but the next improvements would make it closer to production practice.
+
+### 20.1 Use Nginx as the single public entry point
+
+Expose only port 80/443 and reverse proxy the frontend/API internally.
+
+### 20.2 Serve a production React build
+
+Replace the Vite development server with a build stage:
+
+```bash
+npm run build
+```
+
+and serve the generated static files through Nginx.
+
+### 20.3 Use HTTPS
+
+Add a domain name and TLS certificates, preferably with an automated certificate process.
+
+### 20.4 Use secret management
+
+Move JWT secrets and other confidential configuration out of Git and image layers.
+
+### 20.5 Add container restart policies
+
+Example:
+
+```bash
+--restart unless-stopped
+```
+
+### 20.6 Add health checks
+
+Add HTTP and database health checks so failures can be detected automatically.
+
+### 20.7 Build immutable versioned images
+
+Instead of relying only on `latest`, use tags such as:
+
+```text
+mern-backend:1.0.0
+mern-frontend:1.0.0
+wanderlust-mongodb:1.0.0
+```
+
+### 20.8 Push images to a container registry
+
+Docker Hub or Amazon Elastic Container Registry (ECR) can be used so the EC2 host pulls known image versions rather than rebuilding every deployment.
+
+### 20.9 CI/CD
+
+A future pipeline can be:
+
+```text
+Developer
+   |
+   v
+GitHub
+   |
+   v
+GitHub Actions
+   |
+   +--> Test
+   +--> Build Docker images
+   +--> Scan images
+   +--> Push to registry
+   |
+   v
+EC2 deployment
+   |
+   +--> Pull image
+   +--> Restart service
+   +--> Run health checks
+```
+
+### 20.10 Monitoring and logging
+
+Prometheus/Grafana, CloudWatch, or another monitoring stack can be added later for metrics, availability, CPU/memory monitoring, and application logs.
+
+---
+
+## 21. Final Deployment Summary
+
+The completed project demonstrates how to deploy a real MERN application on AWS EC2 using Docker without depending on Docker Compose for the actual runtime workflow.
+
+The key DevOps concepts demonstrated are:
+
+- source control with Git and GitHub
+- Docker image creation
+- separate containers for frontend, backend, and database
+- Docker bridge networking
+- Docker DNS and network aliases
+- MongoDB data persistence using volumes
+- environment-based application configuration
+- API/CORS configuration
+- AWS EC2 networking and security groups
+- container logging and troubleshooting
+- rebuild/redeploy workflows
+
+### Final runtime model
+
+```text
+                    PUBLIC INTERNET
+                           |
+                           v
+                 +--------------------+
+                 |      AWS EC2       |
+                 |                    |
+                 |  :5173             |
+                 |    |               |
+                 |    v               |
+                 | Frontend container |
+                 |        |           |
+                 |        | API       |
+                 |        v           |
+                 |  :5000             |
+                 | Backend container  |
+                 |        |           |
+                 |        v           |
+                 |  MongoDB container |
+                 |   mongo:27017      |
+                 |        |           |
+                 |   mongo-data       |
+                 +--------------------+
+```
+
+The result is a functional containerized MERN deployment that can be rebuilt, restarted, inspected, and redeployed using Docker CLI commands and managed through Git/GitHub.
+
+---
+
+## 22. References
+
+- Project repository: https://github.com/iamajaypokharel/wanderlust-Devops-mern
+- Wanderlust upstream project: https://github.com/quick-heal/wanderlust-devops
+- Docker documentation: https://docs.docker.com/
+- AWS EC2 documentation: https://docs.aws.amazon.com/ec2/
+- MongoDB documentation: https://www.mongodb.com/docs/
+- Vite documentation: https://vite.dev/
+- Express documentation: https://expressjs.com/
+
+---
+
+## Author
+
+**Ajay Pokharel**  
+GitHub: `iamajaypokharel`
