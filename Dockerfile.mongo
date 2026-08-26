@@ -1,0 +1,5 @@
+FROM mongo:6.0
+
+COPY backend/data/sample_posts.json /data/sample_posts.json
+
+CMD ["bash", "-c", "mongod --bind_ip_all --fork --logpath /var/log/mongodb.log && sleep 5 && mongoimport --db wanderlust --collection posts --file /data/sample_posts.json --jsonArray && tail -f /var/log/mongodb.log"]
